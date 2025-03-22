@@ -3,12 +3,10 @@ package model
 import (
 	"fmt"
   style "scfx/internal/styling"
-	"strconv"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/fogleman/ease"
 )
 
 type Model struct {
@@ -21,6 +19,8 @@ type Model struct {
 	Quitting  bool
 	textInput textinput.Model
 	err       error
+      ProjectName string // Добавляем поле для хранения названия проекта
+    IsInputtingName bool // Флаг для отслеживания, вводит ли пользователь название проекта
 }
 
 func Init() Model {
@@ -48,33 +48,44 @@ func (m Model) Init() tea.Cmd {
 
 // Main update function.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Make sure these keys always quit
-	if msg, ok := msg.(tea.KeyMsg); ok {
-		k := msg.String()
-		if k == "q" || k == "esc" || k == "ctrl+c" {
-			m.Quitting = true
-			return m, tea.Quit
-		}
-	}
+    // Make sure these keys always quit
+    if msg, ok := msg.(tea.KeyMsg); ok {
+        k := msg.String()
+        if k == "q" || k == "esc" || k == "ctrl+c" {
+            m.Quitting = true
+            return m, tea.Quit
+        }
+    }
+    if m.Quitting {
+        return m, tea.Quit
+    }
+    if !m.Chosen {
+        return updateChoices(msg, m)
+    }
 
-	if !m.Chosen {
-		return updateChoices(msg, m)
-	}
-	return updateChosen(msg, m)
+    if m.IsInputtingName {
+        // Обрабатываем ввод названия проекта
+        switch msg := msg.(type) {
+        case tea.KeyMsg:
+            switch msg.String() {
+            case "enter":
+                // Сохраняем введенное название проекта
+                m.ProjectName = m.textInput.Value()
+                m.IsInputtingName = false
+                m.Loaded = true
+                return m, frame()
+            }
+        }
+
+        // Обновляем текстовый ввод
+        var cmd tea.Cmd
+        m.textInput, cmd = m.textInput.Update(msg)
+        return m, cmd
+    }
+
+    return updateChosen(msg, m)
 }
 
-func (m Model) View() string {
-	var s string
-	if m.Quitting {
-		return "\n  See you later!\n\n"
-	}
-	if !m.Chosen {
-		s = choicesView(m)
-	} else {
-		s = chosenView(m)
-	}
-	return style.MainStyle.Render("\n" + s + "\n\n")
-}
 
 type (
 	tickMsg  struct{}
@@ -92,114 +103,54 @@ func frame() tea.Cmd {
 		return frameMsg{}
 	})
 }
-
+func (m Model) View() string {
+    var s string
+    if m.Quitting {
+        return "\n  See you later!\n\n"
+    }
+    if !m.Chosen {
+        s = choicesView(m)
+    } else if m.IsInputtingName {
+        s = fmt.Sprintf(
+            "Enter project name:\n\n%s\n\n",
+            m.textInput.View(),
+        )
+    } else {
+        s = chosenView(&m)
+    }
+    return style.MainStyle.Render("\n" + s + "\n\n")
+}
 // Update loop for the first view where you're choosing a task.
 func updateChoices(msg tea.Msg, m Model) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "j", "down":
-			m.Choice++
-			if m.Choice > 3 {
-				m.Choice = 3
-			}
-		case "k", "up":
-			m.Choice--
-			if m.Choice < 0 {
-				m.Choice = 0
-			}
-		case "enter":
-			m.Chosen = true
-			return m, frame()
-		}
+    switch msg := msg.(type) {
+    case tea.KeyMsg:
+        switch msg.String() {
+        case "j", "down":
+            m.Choice++
+            if m.Choice > 3 {
+                m.Choice = 3
+            }
+        case "k", "up":
+            m.Choice--
+            if m.Choice < 0 {
+                m.Choice = 0
+            }
+        case "enter":
+            m.Chosen = true
+            m.IsInputtingName = true // Переключаемся на ввод названия проекта
+            return m, nil
+        }
 
-	case tickMsg:
-		if m.Ticks == 0 {
-			m.Quitting = true
-			return m, tea.Quit
-		}
-		m.Ticks--
-		return m, tick()
-	}
+    case tickMsg:
+        if m.Ticks == 0 {
+            m.Quitting = true
+            return m, tea.Quit
+        }
+        m.Ticks--
+        return m, tick()
+    }
 
-	return m, nil
-}
-
-// Update loop for the second view after a choice has been made
-func updateChosen(msg tea.Msg, m Model) (tea.Model, tea.Cmd) {
-	switch msg.(type) {
-	case frameMsg:
-		if !m.Loaded {
-			m.Frames++
-			m.Progress = ease.OutBounce(float64(m.Frames) / float64(100))
-			if m.Progress >= 1 {
-				m.Progress = 1
-				m.Loaded = true
-				m.Ticks = 3
-				return m, tick()
-			}
-			return m, frame()
-		}
-
-	case tickMsg:
-		if m.Loaded {
-			if m.Ticks == 0 {
-				m.Quitting = true
-				return m, tea.Quit
-			}
-			m.Ticks--
-			return m, tick()
-		}
-	}
-
-	return m, nil
-}
-
-func choicesView(m Model) string {
-	c := m.Choice
-
-	tpl := "What to do today?\n\n"
-	tpl += "%s\n\n"
-	tpl += "Program quits in %s seconds\n\n"
-	tpl += style.SubtleStyle.Render("j/k, up/down: select") + style.DotStyle +
-		style.SubtleStyle.Render("enter: choose") + style.DotStyle +
-		style.SubtleStyle.Render("q, esc: quit")
-
-	choices := fmt.Sprintf(
-		"%s\n%s\n%s\n%s",
-		checkbox("Python", c == 0),
-		checkbox("C++", c == 1),
-		checkbox("Golang", c == 2),
-		checkbox("NodeJS/TS", c == 3),
-	)
-
-	return fmt.Sprintf(tpl, choices, style.TicksStyle.Render(strconv.Itoa(m.Ticks)))
-}
-
-// The second view, after a task has been chosen
-func chosenView(m Model) string {
-	var msg string
-	var projectName string = "Hello"
-	var projectType string
-	switch m.Choice {
-	case 0:
-		projectType = style.KeywordStyle.Render("python")
-	case 1:
-		projectType = "C++"
-	case 2:
-		projectType = "Golang"
-	default:
-		projectType = "NodeJS/TS"
-
-	}
-
-	msg = fmt.Sprintf(
-		"Creating a %s project in %s\n\n",
-		"Enter project name:",
-		projectType,
-		projectName,
-	)
-	return msg + "\n\n"
+    return m, nil
 }
 
 func checkbox(label string, checked bool) string {
